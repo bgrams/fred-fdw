@@ -41,6 +41,22 @@ class Column(ColumnDefinition):
                  resolvers: Optional[Dict[str, Callable[[Qual], Tuple[str, Any]]]] = None,
                  required: bool = False,
                  **kwargs):
+        """
+        ColumnDefinition with additional specific metadata
+
+        :param args: Passed to ColumnDefinition
+        :param allowed: Allowed qual operators
+        :param alias: Http parameter name; defaults to column name
+        :param cleaner: Optional function to clean API results, taking a json response
+        value as its only argument and returning a scalar result.
+        :param default: Default http parameter value
+        :param parameter: Flag indicating that this column is also used as an http parameter
+        :param resolvers: Mapping of <qual.operator, callable> which takes a single qual
+        returns a tuple of (http param name, http param value) to ultimately be built into
+        the API call.
+        :param required: Flag indicating that this parameter is required by the API.
+        :param kwargs: Passed to ColumnDefinition
+        """
 
         super().__init__(*args, **kwargs)
 
@@ -56,6 +72,10 @@ class Column(ColumnDefinition):
         self.parameter = parameter
 
     def resolve(self, qual: Qual) -> Tuple[str, Any]:
+        """
+        Resolve a qual
+        :param qual: qual
+        """
         if self.allowed is not None:
             errmsg = "Operator %s not supported for %s"
             assert qual.operator in self.allowed, errmsg % (qual.operator, self.column_name)
@@ -67,7 +87,7 @@ class Column(ColumnDefinition):
 class MetaTable(abc.ABCMeta):
 
     registry: Dict[str, "MetaTable"] = {}
-    definition: TableDefinition
+    schemadef: List[TableDefinition] = []
 
     def __new__(mcs, name, bases, dct):
         columns = dict(filter(lambda x: isinstance(x[1], Column), dct.items()))
@@ -101,7 +121,7 @@ class MetaTable(abc.ABCMeta):
 
         if not inspect.isabstract(klass):
             mcs.registry[name] = klass  # type: ignore
-
+            mcs.schemadef.append(dct["definition"])
         return klass
 
 
@@ -155,7 +175,7 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
 
     @classmethod
     def import_schema(cls, *args, **kwargs) -> List[TableDefinition]:
-        return [t.definition for t in MetaTable.registry.values()]
+        return list(MetaTable.schemadef)
 
     def resolve(self, quals: List[Qual]) -> List[Dict[str, str]]:
         """
@@ -231,7 +251,10 @@ class Observation(ForeignTable):
         "jsonpath": "observations[*]",
     }
 
-    series_id = Column("series_id", type_name="text", required=True, allowed=["=", ("=", True)], parameter=True)
+    series_id = Column(
+        "series_id", type_name="text", required=True,
+        allowed=["=", ("=", True)], parameter=True
+    )
     realtime_start = Column("realtime_start", type_name="date", allowed=["="], parameter=True)
     realtime_end = Column("realtime_end", type_name="date", allowed=["="], parameter=True)
     date = Column(
