@@ -14,3 +14,4 @@ RUN set -ex \
     && pgxn install multicorn
 
 COPY --chown=postgres:postgres ./fred_fdw fred_fdw
+COPY --chown=postgres:postgres ./sql sql
