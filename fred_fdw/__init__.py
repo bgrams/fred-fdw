@@ -5,6 +5,7 @@ import inspect
 import itertools
 import logging
 import os
+from functools import partial
 from typing import (Any,
                     Callable,
                     Dict,
@@ -22,6 +23,7 @@ from multicorn.utils import log_to_postgres
 
 
 loop = asyncio.get_event_loop()
+logger = logging.getLogger("fred")
 
 
 class PgHandler(logging.Handler):
@@ -131,6 +133,38 @@ class MetaTable(abc.ABCMeta):
         return klass
 
 
+class _FDWManager:
+
+    @staticmethod
+    def __call__(fdw_options, fdw_columns) -> "ForeignTable":
+        table = fdw_options.pop("table", None)
+        klass = MetaTable.registry.get(table)
+        return klass(fdw_options, fdw_columns)
+
+    @classmethod
+    def import_schema(cls,
+                      schema: str,
+                      srv_options: Mapping[str, Any],
+                      options: Mapping[str, Any],
+                      restriction_type: str,
+                      restricts: List[str]
+                      ) -> List[TableDefinition]:
+
+        logger.info("Importing schema %s" % schema)
+
+        if restriction_type == "except":
+            filt = partial(filter, lambda x: x.definition not in restricts)
+        elif restriction_type == "limit":
+            filt = partial(filter, lambda x: x.definition in restricts)
+        else:
+            filt = partial(filter, lambda _: True)
+
+        return list(filt(MetaTable.schemadef))
+
+
+FDWManager = _FDWManager()
+
+
 class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
 
     __table_name__: str
@@ -143,12 +177,7 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
     required: Set[str]
     parameters: Set[str]
 
-    clients: Dict[str, fredio.client.ApiClient] = {}
-
-    def __new__(cls, fdw_options, fdw_columns) -> "ForeignTable":
-        table = fdw_options.pop("table", None)
-        klass = MetaTable.registry.get(table)
-        return super().__new__(klass)
+    client: Optional[fredio.client.ApiClient] = None
 
     def __init__(self, fdw_options, fdw_columns) -> None:
 
@@ -158,7 +187,7 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         # But recommended to use user mapping options
         api_key = fdw_options.get("api_key", None)
 
-        self.client = self.get_or_create_client(api_key)
+        self.client = self.get_client(api_key)
         self.options = fdw_options
 
         self.logger = self.setup_logger(fdw_options)
@@ -166,22 +195,36 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
 
     @abc.abstractmethod
     def resolve_endpoint(self, keys: Set[str]) -> fredio.client.Endpoint:
-        ...
+        """
+        Resolve a set of API parameter keys to an Endpoint
+        :param keys: Set of API parameter keys resolved from provided Quals
+        """
 
     @classmethod
-    def get_or_create_client(cls, api_key) -> fredio.client.ApiClient:
-        return cls.clients.setdefault(
-            api_key, fredio.configure(api_key=api_key)
-        )
+    def get_client(cls, api_key) -> fredio.client.ApiClient:
+        if cls.client is not None:
+            return cls.client
+        return fredio.configure(api_key=api_key)
 
     @classmethod
-    def close_all_clients(cls) -> None:
-        for client in cls.clients.values():
-            client.close()
+    def set_client(cls, client: fredio.client.ApiClient):
+        cls.client = client
 
     @classmethod
-    def import_schema(cls, *args, **kwargs) -> List[TableDefinition]:
-        return list(MetaTable.schemadef)
+    def close_client(cls) -> None:
+        if cls.client is not None:
+            cls.client.close()
+
+    @classmethod
+    def import_schema(cls,
+                      schema,
+                      srv_options,
+                      options,
+                      restriction_type,
+                      restricts
+                      ) -> List[TableDefinition]:
+
+        return [cls.definition]
 
     def resolve(self, quals: List[Qual]) -> List[Dict[str, str]]:
         """
@@ -218,14 +261,14 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         handler = PgHandler()
         handler.setFormatter(logging.Formatter(fmt))
 
-        logger = logging.getLogger(self.__table_name__)
-        logger.addHandler(handler)
-        logger.setLevel(logging.getLevelName(lvl))
+        obj_logger = logging.getLogger("fred." + self.__table_name__)
+        obj_logger.addHandler(handler)
+        obj_logger.setLevel(logging.getLevelName(lvl))
 
         # Only the first call will have an effect
         logging.basicConfig(level=lvl, format=fmt)
 
-        return logger
+        return obj_logger
 
     def execute(self,
                 quals: List[Qual],
@@ -254,7 +297,7 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
                 yield param
 
 
-atexit.register(ForeignTable.close_all_clients)
+atexit.register(ForeignTable.close_client)
 
 
 class Observation(ForeignTable):
