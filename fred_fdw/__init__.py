@@ -38,9 +38,10 @@ class Column(ColumnDefinition):
                  cleaner: Optional[Callable[[Any], Any]] = None,
                  default: Optional[Any] = None,
                  parameter: bool = False,
-                 resolvers: Optional[Dict[str, Callable[[Qual], Tuple[str, Any]]]] = None,
+                 resolvers: Optional[Dict[str, Callable[[Qual], Dict[str, Any]]]] = None,
                  required: bool = False,
-                 **kwargs):
+                 **kwargs
+                 ) -> None:
         """
         ColumnDefinition with additional specific metadata
 
@@ -71,16 +72,21 @@ class Column(ColumnDefinition):
         self.resolvers = resolvers or {}
         self.parameter = parameter
 
-    def resolve(self, qual: Qual) -> Tuple[str, Any]:
+    def resolve(self, qual: Qual) -> Dict[str, Any]:
         """
-        Resolve a qual
+        Resolve a qual to an API parameter
         :param qual: qual
         """
         if self.allowed is not None:
             errmsg = "Operator %s not supported for %s"
             assert qual.operator in self.allowed, errmsg % (qual.operator, self.column_name)
 
-        resolver = self.resolvers.get(qual.operator, lambda x: (self.alias, x.value))
+        # 1. Check for a defined resolver
+        # 2. Check for a default resolver
+        # 3. Get default noop resolver
+        resolver = self.resolvers.get(
+            qual.operator, self.resolvers.get("*", lambda x: {self.alias: x.value})
+        )
         return resolver(qual)
 
 
@@ -158,9 +164,9 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         self.logger = self.setup_logger(fdw_options)
         self.logger.debug("PID %d" % os.getpid())
 
-    @property
     @abc.abstractmethod
-    def endpoint(self) -> fredio.client.Endpoint: ...
+    def resolve_endpoint(self, keys: Set[str]) -> fredio.client.Endpoint:
+        ...
 
     @classmethod
     def get_or_create_client(cls, api_key) -> fredio.client.ApiClient:
@@ -179,7 +185,7 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
 
     def resolve(self, quals: List[Qual]) -> List[Dict[str, str]]:
         """
-        Map qualifiers to API parameters
+        Resolve all quals to API parameters
         """
         params = {
             k: v if isinstance(v, (list, set, tuple)) else [v]
@@ -188,13 +194,14 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
 
         for qual in filter(lambda x: x.field_name in self.parameters, quals):
 
-            name, value = self.columns[qual.field_name].resolve(qual)
+            resolved = self.columns[qual.field_name].resolve(qual)
 
-            if isinstance(value, (list, set, tuple)):
-                value = list(map(str, value))
-                params.setdefault(name, []).extend(value)
-            else:
-                params.setdefault(name, []).append(str(value))
+            for alias, value in resolved.items():
+                if isinstance(value, (list, set, tuple)):
+                    value = list(map(str, value))
+                    params.setdefault(alias, []).extend(value)
+                else:
+                    params.setdefault(alias, []).append(str(value))
 
         if self.required:
             reqdiff = self.required.difference(params.keys())
@@ -226,9 +233,15 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
                 sortkeys: Optional[List[SortKey]] = None
                 ) -> Generator[Dict[str, Any], None, None]:
 
+        self.logger.debug("Executing with quals %s" % quals)
+
         param_list = self.resolve(quals)
+
+        endpoint = self.resolve_endpoint(set(param_list[0].keys()))
+        jsonpath = self.__table_args__.get("jsonpath")
+
         param_coro = list(map(
-            lambda x: self.endpoint.aget(**x, jsonpath=self.__table_args__.get("jsonpath")),
+            lambda x: endpoint.aget(**x, jsonpath=jsonpath),
             param_list
         ))
 
@@ -257,24 +270,16 @@ class Observation(ForeignTable):
     )
     realtime_start = Column("realtime_start", type_name="date", allowed=["="], parameter=True)
     realtime_end = Column("realtime_end", type_name="date", allowed=["="], parameter=True)
-    date = Column(
-        "date",
-        type_name="date",
-        parameter=True,
-        resolvers={
-            ">=": lambda x: ("observation_start", x.value),
-            "<=": lambda x: ("observation_end", x.value),
-        })
+    date = Column("date", type_name="date", parameter=True)
     value = Column("value", type_name="numeric", cleaner=lambda x: None if x == "." else x)
     units = Column("units", type_name="text", default="lin", parameter=True)
     output_type = Column("output_type", type_name="smallint", default=1, parameter=True)
 
     # Share these resolvers bc it's only like 2 extra rows being requested
-    date.resolvers[">"] = date.resolvers[">="]
-    date.resolvers["<"] = date.resolvers["<="]
+    date.resolvers[">"] = date.resolvers[">="] = lambda x: {"observation_start": x.value}
+    date.resolvers["<"] = date.resolvers["<="] = lambda x: {"observation_end": x.value}
 
-    @property
-    def endpoint(self):
+    def resolve_endpoint(self, keys: Set[str]):
         return self.client.series.observations
 
 
@@ -286,8 +291,8 @@ class Series(ForeignTable):
     }
 
     id = Column(
-        "id", type_name="text", required=True, allowed=["=", ("=", True)],
-        alias="series_id", parameter=True
+        "id", type_name="text", allowed=["=", "~~", ("=", True)],
+        alias="series_id", parameter=True,
     )
     realtime_start = Column("realtime_start", type_name="date", allowed=["="], parameter=True)
     realtime_end = Column("realtime_end", type_name="date", allowed=["="], parameter=True)
@@ -304,6 +309,14 @@ class Series(ForeignTable):
     popularity = Column("popularity", type_name="numeric")
     notes = Column("notes", type_name="text")
 
-    @property
-    def endpoint(self):
+    id.resolvers = {
+        "~~": lambda x: {
+            "search_type": "series_id",
+            "search_text": x.value.replace("%", "*")
+        },
+    }
+
+    def resolve_endpoint(self, keys: Set[str]):
+        if len(keys.intersection(("search_text", "search_type"))) == 2:
+            return self.client.series.search
         return self.client.series
