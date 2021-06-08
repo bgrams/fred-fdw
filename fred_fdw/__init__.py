@@ -202,33 +202,34 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
 
     @classmethod
     def get_client(cls, api_key) -> fredio.client.ApiClient:
+        """
+        Get fredio client from API key
+        :param api_key: FRED api key
+        """
         if cls.client is not None:
             return cls.client
         return fredio.configure(api_key=api_key)
 
     @classmethod
     def set_client(cls, client: fredio.client.ApiClient):
+        """
+        Set the class fredio client
+        :param client: ApiClient
+        """
         cls.client = client
 
     @classmethod
     def close_client(cls) -> None:
+        """
+        Cliose the class client if exists
+        """
         if cls.client is not None:
             cls.client.close()
-
-    @classmethod
-    def import_schema(cls,
-                      schema,
-                      srv_options,
-                      options,
-                      restriction_type,
-                      restricts
-                      ) -> List[TableDefinition]:
-
-        return [cls.definition]
 
     def resolve(self, quals: List[Qual]) -> List[Dict[str, str]]:
         """
         Resolve all quals to API parameters
+        :param quals: Quals
         """
         params = {
             k: v if isinstance(v, (list, set, tuple)) else [v]
@@ -254,6 +255,10 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         return list(map(lambda x: dict(zip(params.keys(), x)), values))
 
     def setup_logger(self, options: Mapping[str, Any]) -> logging.Logger:
+        """
+        Create a logger instance given FDW options
+        :param options: Options
+        """
 
         lvl = options.get("log_level", logging.NOTSET)
         fmt = options.get("log_format", logging.BASIC_FORMAT)
@@ -275,6 +280,12 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
                 columns: Set[str],
                 sortkeys: Optional[List[SortKey]] = None
                 ) -> Generator[Dict[str, Any], None, None]:
+        """
+        Execution hook
+        :param quals: Quals
+        :param columns: Columns
+        :param sortkeys: Sort keys
+        """
 
         self.logger.debug("Executing with quals %s" % quals)
 

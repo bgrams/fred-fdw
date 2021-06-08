@@ -1,0 +1,12 @@
+version: "3"
+
+services:
+  postgres:
+    build:
+      context: .
+    environment:
+      - FRED_API_KEY=${FRED_API_KEY}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_USERNAME=${POSTGRES_USERNAME:-postgres}
+    ports:
+    - 5432:5432
