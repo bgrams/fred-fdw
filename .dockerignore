@@ -1,0 +1,6 @@
+# Ignore private files and dirs
+.*
+
+# Ignore readme and configs
+*.md
+*.yml

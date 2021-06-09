@@ -33,8 +33,8 @@ bash# psql -U postgres -Wc "create user mapping for <user> server fred options (
 * Rate limiting is not managed across user processes (i.e. connections)
 * Both `series` and `series_observation` tables require `id`, and `series_id` predicates, respectively.
   In other words full table scans are (reasonably) not supported.
-* Joins across foreign tables are clunky since a) predicates are required and b) join filters are not pushed to each
-  table by the query planner. A workaround would be to join materialized CTE's that share common filters e.g.
+* Joins using foreign tables are clunky since a) predicates are required and b) filters are not pushed along with the join filter
+by the query planner. A workaround would be to join materialized CTE's that share common filters e.g.
 ```sql
 WITH
     q1 AS MATERIALIZED (SELECT * FROM SERIES WHERE id IN ('USRECD', 'EFFR', 'GDP')),

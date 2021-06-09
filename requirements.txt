@@ -1,3 +1,2 @@
 fredio>=0.1.2
-pgxnclient
-pyjq
+jq

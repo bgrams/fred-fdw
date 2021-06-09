@@ -1,7 +1,5 @@
 FROM postgres:12
 
-COPY ./requirements.txt requirements.txt
-
 RUN set -ex \
     && apt-get update \
     && apt-get install -yqq \
@@ -9,9 +7,9 @@ RUN set -ex \
         python3-dev \
         python3-pip \
         postgresql-server-dev-${PG_MAJOR} \
-    && pip3 install --upgrade pip \
-    && pip3 install -r requirements.txt \
+    && pip3 install --upgrade pip pgxnclient setuptools \
     && pgxn install multicorn
 
-COPY --chown=postgres:postgres ./fred_fdw fred_fdw
-COPY --chown=postgres:postgres ./sql sql
+COPY --chown=postgres:postges . .
+
+RUN python3 setup.py install
