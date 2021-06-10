@@ -5,7 +5,7 @@ import inspect
 import itertools
 import logging
 import os
-from functools import partial
+from functools import reduce, partial
 from typing import (Any,
                     Callable,
                     Dict,
@@ -157,6 +157,10 @@ class _FDWManager:
 
         return list(filt(MetaTable.schemadef))
 
+    def get_rel_size(self, quals, columns):
+        logging.debug("ldsmg")
+        return (1000000, 2000)
+
 
 FDWManager = _FDWManager()
 
@@ -222,10 +226,11 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         if cls.client is not None:
             cls.client.close()
 
-    def resolve(self, quals: List[Qual]) -> List[Dict[str, str]]:
+    def resolve(self, quals: List[Qual], strict: bool = True) -> List[Dict[str, str]]:
         """
         Resolve all quals to API parameters
         :param quals: Quals
+        :param strict: Raise AssertionError if required params are not present
         """
         params = {
             k: v if isinstance(v, (list, set, tuple)) else [v]
@@ -243,7 +248,7 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
                 else:
                     params.setdefault(alias, []).append(str(value))
 
-        if self.required:
+        if self.required and strict:
             reqdiff = self.required.difference(params.keys())
             assert not reqdiff, "%s predicates are required" % ", ".join(self.required)
 
@@ -270,6 +275,35 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         logging.basicConfig(level=lvl, format=fmt)
 
         return obj_logger
+
+    def get_path_keys(self):
+        return self.__table_args__.get("pathkeys", [])
+
+    def get_rel_size(self, quals, columns):
+        """
+        Try and intelligently estimate the relation output size based on presence of path keys
+        """
+
+        # est. size per request without keys (very liberal)
+        n, m = 1000, 256
+
+        # est. number of requests based on presence of path keys
+        parm = self.resolve(quals, False)[0].keys()
+
+        # if all keys for a given path are present, use the est. number of rows for that path
+        # if more than one path is present, use the max estimate
+        # if no keys are present, set a super high default bc this probably means full scan
+        included_keys = list(filter(
+            lambda x: set(x[0]).intersection(parm) == len(x[0]),
+            self.get_path_keys()
+        ))
+
+        if included_keys:
+            nmax = reduce(max, filter(lambda x: x[1], included_keys))
+        else:
+            nmax = int(1e9)
+
+        return nmax * n, len(columns) * m
 
     def execute(self,
                 quals: List[Qual],
@@ -310,7 +344,10 @@ atexit.register(ForeignTable.close_client)
 class Observation(ForeignTable):
 
     __table_name__ = "series_observation"
-    __table_args__ = {"jsonpath": ".observations[]"}
+    __table_args__ = {
+        "jsonpath": ".observations[]",
+        "pathkeys": [(("series_id",), 200)]
+    }
 
     series_id = Column(
         "series_id", type_name="text", required=True,
@@ -334,7 +371,10 @@ class Observation(ForeignTable):
 class Series(ForeignTable):
 
     __table_name__ = "series"
-    __table_args__ = {"jsonpath": ".seriess[]"}
+    __table_args__ = {
+        "jsonpath": ".seriess[]",
+        "pathkeys": [(("id",), 1), (("search_text", "search_type"), 1000)]
+    }
 
     id = Column(
         "id", type_name="text", allowed=["=", "~~", ("=", True)],
