@@ -1,5 +1,5 @@
 # fred-fdw
-Foreign Data Wrapper for FRED, powered by the [fredio](https://github.com/bgrams/fredio) library.
+Postgres Foreign Data Wrapper for FRED, powered by [fredio](https://github.com/bgrams/fredio) and [multicorn](https://github.com/Segfault-Inc/Multicorn).
 
 ### Setup
 ```bash
@@ -9,12 +9,12 @@ Creating fred-fdw_postgres_1 ... done
 
 $ docker exec -it fred-fdw_postgres_1 bash
 
-bash# psql -U postgres -Wf sql/setup.sql -v server=fred -v schema=public
+$ psql -U postgres -Wf sql/setup.sql -v server=fred -v schema=public
 CREATE EXTENSION
 CREATE SERVER
 IMPORT FOREIGN SCHEMA
 
-bash# psql -U postgres -Wc \\d
+$ psql -U postgres -Wc \\d
                    List of relations
  Schema |        Name        |     Type      |  Owner
 --------+--------------------+---------------+----------
@@ -22,30 +22,30 @@ bash# psql -U postgres -Wc \\d
  public | series_observation | foreign table | postgres
 (2 rows)
 
-bash# psql -U postgres -Wc "create user mapping for <user> server fred options ( api_key '<fred api key>' );"
+$ psql -U postgres -Wc "create user mapping for <user> server fred options ( api_key '<fred api key>' );"
 ```
 
 ### Features
 * Request concurrency and rate limiting managed by fredio
-* Full text search for series id's against the `series` table
+* Full text search for id's and titles against the `series` table
 
 ### Limitations
 * Rate limiting is not managed across user processes (i.e. connections)
-* Both `series` and `series_observation` tables require `id`, and `series_id` predicates, respectively.
+* Both `series` and `series_observation` tables require `id` or `title`, and `series_id` predicates, respectively.
   In other words full table scans are (reasonably) not supported.
-* Joins using foreign tables are clunky since a) predicates are required and b) filters are not pushed along with the join filter
-by the query planner. A workaround would be to join materialized CTE's that share common filters e.g.
+* There may be *serious* performance degradation vs. the pure Python client for reasons that are currently unknown (tested in PG12).
+* Joins across foreign tables are not perfect due to the limited control we have over the query optimizer. When performing a join, it may be
+necessary to materialize an intermediate result set using a CTE to avoid repetitive API calls e.g.
+
 ```sql
-WITH
-    q1 AS MATERIALIZED (SELECT * FROM SERIES WHERE id IN ('USRECD', 'EFFR', 'GDP')),
-    q2 AS MATERIALIZED (
-        SELECT * FROM series_observation
-        WHERE series_id IN ('USRECD', 'EFFR', 'GDP')
-    )
-SELECT q1.*, q2.date, q2.value
-FROM q1 JOIN q2
-ON q1.id = q2.series_id
-  ```
+WITH rec AS MATERIALIZED (
+  SELECT id AS series_id, title, last_updated, units_short
+  FROM series WHERE id LIKE 'USREC%'
+)
+SELECT rec.*, obs.date, obs.value
+FROM series_observation obs
+JOIN rec USING (series_id)
+```
 
 ### Should I use this in production?
 Probably not, but it's fun to play with. PR's to improve performance or stability are more than welcome!

@@ -157,10 +157,6 @@ class _FDWManager:
 
         return list(filt(MetaTable.schemadef))
 
-    def get_rel_size(self, quals, columns):
-        logging.debug("ldsmg")
-        return (1000000, 2000)
-
 
 FDWManager = _FDWManager()
 
