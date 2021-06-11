@@ -166,12 +166,15 @@ FDWManager = _FDWManager()
 
 
 class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
+    """
+    Foreign Data Wrapper with Column definition metadata
+    """
 
     __table_name__: str
     __table_args__: Mapping[str, Any]
 
+    # SET BY THE METACLASS
     columns: Dict[str, Column]
-
     cleaners: Dict[str, Callable]
     defaults: Dict[str, Any]
     required: Set[str]
@@ -373,16 +376,13 @@ class Series(ForeignTable):
     __table_name__ = "series"
     __table_args__ = {
         "jsonpath": ".seriess[]",
-        "pathkeys": [(("id",), 1), (("search_text", "search_type"), 1000)]
+        "pathkeys": [(("series_id",), 1), (("search_text", "search_type"), 10000)]
     }
 
-    id = Column(
-        "id", type_name="text", allowed=["=", "~~", ("=", True)],
-        alias="series_id", parameter=True,
-    )
+    id = Column("id", type_name="text", alias="series_id", parameter=True)
     realtime_start = Column("realtime_start", type_name="date", allowed=["="], parameter=True)
     realtime_end = Column("realtime_end", type_name="date", allowed=["="], parameter=True)
-    title = Column("title", type_name="text")
+    title = Column("title", type_name="text", allowed=["~~"], parameter=True)
     observation_start = Column("observation_start", type_name="date")
     observation_end = Column("observation_end", type_name="date")
     frequency = Column("frequency", type_name="text")
@@ -396,10 +396,11 @@ class Series(ForeignTable):
     notes = Column("notes", type_name="text")
 
     id.resolvers = {
-        "~~": lambda x: {
-            "search_type": "series_id",  # can't use nonlocal id ref so hard coded
-            "search_text": x.value.replace("%", "*")
-        },
+        "~~": lambda x: {"search_type": "series_id", "search_text": x.value.replace("%", "*")}
+    }
+
+    title.resolvers = {
+        "~~": lambda x: {"search_type": "full_text", "search_text": x.value.replace("%", "*")}
     }
 
     def resolve_endpoint(self, keys: Set[str]):
