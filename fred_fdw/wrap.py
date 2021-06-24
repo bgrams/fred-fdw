@@ -1,11 +1,14 @@
 import abc
 import asyncio
 import atexit
+import datetime
 import inspect
 import itertools
 import logging
 import os
+from dateutil.parser import parse
 from functools import reduce, partial
+from pytz import timezone
 from typing import (Any,
                     Callable,
                     Dict,
@@ -22,6 +25,8 @@ from multicorn import ForeignDataWrapper, Qual, SortKey, TableDefinition, Column
 
 from fred_fdw.utils import PgHandler, engine
 
+
+FRED_TZ = timezone("US/Central")
 
 loop = asyncio.get_event_loop()
 logger = logging.getLogger("fred")
@@ -149,9 +154,9 @@ class _FDWManager:
         logger.info("Importing schema %s" % schema)
 
         if restriction_type == "except":
-            filt = partial(filter, lambda x: x.definition not in restricts)
+            filt = partial(filter, lambda x: x.definition.table_name not in restricts)
         elif restriction_type == "limit":
-            filt = partial(filter, lambda x: x.definition in restricts)
+            filt = partial(filter, lambda x: x.definition.table_name in restricts)
         else:
             filt = partial(filter, lambda _: True)
 
@@ -283,9 +288,6 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         Try and intelligently estimate the relation output size based on presence of path keys
         """
 
-        # est. size per request without keys (very liberal)
-        n, m = 1000, 256
-
         # est. number of requests based on presence of path keys
         parm = self.resolve(quals, False)[0].keys()
 
@@ -293,7 +295,7 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         # if more than one path is present, use the max estimate
         # if no keys are present, set a super high default bc this probably means full scan
         included_keys = list(filter(
-            lambda x: set(x[0]).intersection(parm) == len(x[0]),
+            lambda x: set(x[0]) & set(parm) == len(x[0]),
             self.get_path_keys()
         ))
 
@@ -302,7 +304,7 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
         else:
             nmax = int(1e9)
 
-        return nmax * n, len(columns) * m
+        return nmax, len(columns) * 256
 
     def execute(self,
                 quals: List[Qual],
@@ -338,6 +340,14 @@ class ForeignTable(ForeignDataWrapper, metaclass=MetaTable):
 
 
 atexit.register(ForeignTable.close_client)
+
+
+def to_datetime(s):
+    if isinstance(s, str):
+        s = parse(s)
+    if isinstance(s, datetime.date):
+        s = datetime.datetime.combine(s, datetime.time())
+    return s
 
 
 class Observation(ForeignTable):
@@ -400,6 +410,75 @@ class Series(ForeignTable):
     }
 
     def resolve_endpoint(self, keys: Set[str]):
-        if len(keys.intersection(("search_text", "search_type"))) == 2:
+        if len(keys & {"search_text", "search_type"}) == 2:
             return self.client.series.search
         return self.client.series
+
+
+class SeriesUpdates(Series):
+    __table_name__ = "series_updates"
+    __table_args__ = {"jsonpath": ".seriess[]"}
+
+    id = Column("id", type_name="text")
+    realtime_start = Column("realtime_start", type_name="date")
+    realtime_end = Column("realtime_end", type_name="date")
+    title = Column("title", type_name="text")
+    observation_start = Column("observation_start", type_name="date")
+    observation_end = Column("observation_end", type_name="date")
+    frequency = Column("frequency", type_name="text")
+    frequency_short = Column("frequency_short", type_name="varchar(10)")
+    units = Column("units", type_name="text")
+    units_short = Column("units_short", type_name="text")
+    seasonal_adjustment = Column("seasonal_adjustment", type_name="text")
+    seasonal_adjustment_short = Column("seasonal_adjustment_short", type_name="varchar(10)")
+    last_updated = Column("last_updated", type_name="timestamp with time zone")
+    popularity = Column("popularity", type_name="numeric")
+    notes = Column("notes", type_name="text")
+
+    filter_value = Column(
+        "filter_value", type_name="text", default="all", parameter=True, allowed=["="]
+    )
+    last_updated = Column("last_updated", type_name="timestamp with time zone", parameter=True)
+
+    last_updated.resolvers[">"] = last_updated.resolvers[">="] = lambda x: {
+        "start_time": to_datetime(x.value).astimezone(FRED_TZ).strftime("%Y%m%d%H%M")
+    }
+
+    last_updated.resolvers["<"] = last_updated.resolvers["<="] = lambda x: {
+        "end_time": to_datetime(x.value).astimezone(FRED_TZ).strftime("%Y%m%d%H%M")
+    }
+
+    def resolve_endpoint(self, keys: Set[str]):
+        return self.client.series.updates
+
+
+class Release(ForeignTable):
+    __table_name__ = "release"
+    __table_args__ = {"jsonpath": ".releases[]"}
+
+    id = Column("id", type_name="int", parameter=True, alias="release_id", allowed=["=", ("=", True)])
+    realtime_start = Column("realtime_start", type_name="date", parameter=True, allowed=["="])
+    realtime_end = Column("realtime_end", type_name="date", parameter=True, allowed=["="])
+    name = Column("name", type_name="text")
+    press_release = Column("press_release", type_name="bool")
+    link = Column("link", type_name="varchar")
+
+    def resolve_endpoint(self, keys: Set[str]) -> fredio.client.Endpoint:
+        if "release_id" not in keys:
+            return self.client.releases
+        return self.client.release
+
+
+class Category(ForeignTable):
+    __table_name__ = "category"
+    __table_args__ = {"jsonpath": ".categories[]"}
+
+    id = Column(
+        "id", type_name="int", parameter=True, alias="category_id",
+        required=True, allowed=["=", ("=", True)]
+    )
+    name = Column("name", type_name="text")
+    parent_id = Column("parent_id", type_name="int")
+
+    def resolve_endpoint(self, keys: Set[str]) -> fredio.client.Endpoint:
+        return self.client.category
