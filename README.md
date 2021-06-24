@@ -5,9 +5,9 @@ Postgres Foreign Data Wrapper for FRED, powered by [fredio](https://github.com/b
 ```bash
 $ POSTGRES_PASSWORD=<password> docker-compose up -d
 Creating network "fred-fdw_default" with the default driver
-Creating fred-fdw_postgres_1 ... done
+Creating fred-fdw ... done
 
-$ docker exec -it fred-fdw_postgres_1 bash
+$ docker exec -it fred-fdw bash
 
 $ psql -U postgres -Wf sql/setup.sql -v server=fred -v schema=public
 CREATE EXTENSION

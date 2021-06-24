@@ -4,9 +4,9 @@ services:
   postgres:
     build:
       context: .
+    container_name: "fred-fdw"
     environment:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_USERNAME=${POSTGRES_USERNAME:-postgres}
     ports:
     - 5432:5432
     volumes:
