@@ -18,9 +18,12 @@ $ psql -U postgres -Wc \\d
                    List of relations
  Schema |        Name        |     Type      |  Owner
 --------+--------------------+---------------+----------
+ public | category           | foreign table | postgres
+ public | release            | foreign table | postgres
  public | series             | foreign table | postgres
  public | series_observation | foreign table | postgres
-(2 rows)
+ public | series_updates     | foreign table | postgres
+(5 rows)
 
 $ psql -U postgres -Wc "create user mapping for <user> server fred options ( api_key '<fred api key>' );"
 ```
